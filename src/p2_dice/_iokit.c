@@ -34,9 +34,10 @@ static PyObject *configurations(io_service_t service) {
     IOUSBDeviceInterface **device = NULL;
     HRESULT query = (*plugin)->QueryInterface(
         plugin, CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID100), (LPVOID *)&device);
-    IODestroyPlugInInterface(plugin);
-    if (query != S_OK || !device)
+    if (query != S_OK || !device) {
+        IODestroyPlugInInterface(plugin);
         return io_error("Querying USB descriptor interface", query);
+    }
 
     UInt8 count = 0;
     PyObject *result = NULL;
@@ -77,6 +78,7 @@ static PyObject *configurations(io_service_t service) {
     }
 done:
     (*device)->Release(device);
+    IODestroyPlugInInterface(plugin);
     return result;
 }
 
@@ -94,7 +96,8 @@ static int append_device(PyObject *devices, io_service_t service) {
     }
     int64_t location = number_property(service, CFSTR(kUSBHostPropertyLocationID));
     int64_t address = number_property(service, CFSTR(kUSBHostDevicePropertyAddress));
-    int bus = location > 0 && location <= UINT32_MAX ? (int)(location >> 24) : -1;
+    int bus = location != -1 && location != 0 && location >= INT32_MIN && location <= UINT32_MAX
+              ? (int)((uint32_t)location >> 24) : -1;
     PyObject *configs = configurations(service);
     if (!configs)
         return -1;
