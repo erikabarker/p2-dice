@@ -4,22 +4,22 @@ A macOS command-line tool for inspecting the USB interfaces exposed by a Volvo D
 
 ## Inspect an adapter
 
-On macOS, install [uv](https://docs.astral.sh/uv/) and [libusb](https://formulae.brew.sh/formula/libusb) through Homebrew. Connect the adapter to the Mac. If a virtual machine has captured it, release the adapter to macOS first.
+On macOS, install the Xcode Command Line Tools and [uv](https://docs.astral.sh/uv/). The compiler builds the small IOKit extension when uv installs the package. Connect the adapter to the Mac. If a virtual machine has captured it, release the adapter to macOS first.
 
 ```sh
-brew install uv libusb
+brew install uv
 uv sync --locked
 uv run --locked p2-dice inventory
 ```
 
-Run the last two commands from this checkout. The inventory looks for USB vendor ID `17aa` and product ID `d1ce` and lists each matching device's configurations, interfaces, alternate settings and endpoints. Endpoint direction is relative to the host. An IN endpoint carries data from the adapter to the Mac. See the [libusb descriptor reference](https://libusb.sourceforge.io/api-1.0/group__libusb__desc.html).
+Run the last two commands from this checkout. The inventory looks for USB vendor ID `17aa` and product ID `d1ce` and lists each matching device's configurations, interfaces, alternate settings and endpoints. Endpoint direction is relative to the host. An IN endpoint carries data from the adapter to the Mac. The command reads the configuration descriptors macOS cached during USB enumeration. See [Apple’s USB device interface reference](https://developer.apple.com/documentation/iokit/iousbdeviceinterface942/2977148-getconfigurationdescriptorptr).
 
 ## Support
 
 | Operation | Evidence |
 | --- | --- |
 | Identify a USB device advertising `17aa:d1ce` | Observed by macOS on one adapter. These IDs alone cannot establish authenticity. |
-| Inventory configurations, interfaces and endpoints | Native implementation under validation. |
+| Inventory configurations, interfaces and endpoints | On one adapter, a native IOKit probe read configuration 1, interface 0, alternate setting 0. Bulk endpoints were IN `0x81` and OUT `0x01`, both with a 512-byte maximum packet. |
 | Read adapter firmware version | Unverified. |
 | Read a vehicle ECU on the 2004 XC70 | Unverified. |
 
