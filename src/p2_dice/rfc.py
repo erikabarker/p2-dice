@@ -1,5 +1,3 @@
-RFC_VERSION_REQUEST = bytes.fromhex("b5 02 00 20 00 69")
-
 # Four header bytes, five reply-body bytes and one body checksum.
 _REPLY_SIZE = 10
 

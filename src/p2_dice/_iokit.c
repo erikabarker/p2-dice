@@ -5,6 +5,8 @@
 #include <IOKit/IOKitLib.h>
 #include <IOKit/usb/IOUSBLib.h>
 #include <libkern/OSByteOrder.h>
+#include <stdbool.h>
+#include <time.h>
 
 static int64_t number_property(io_service_t service, CFStringRef key) {
     CFTypeRef value = IORegistryEntryCreateCFProperty(service, key, NULL, 0);
@@ -82,10 +84,13 @@ done:
     return result;
 }
 
+static bool is_dice(io_service_t service) {
+    return number_property(service, CFSTR(kUSBVendorID)) == 0x17aa &&
+           number_property(service, CFSTR(kUSBProductID)) == 0xd1ce;
+}
+
 static int append_device(PyObject *devices, io_service_t service) {
-    int64_t vendor = number_property(service, CFSTR(kUSBVendorID));
-    int64_t product = number_property(service, CFSTR(kUSBProductID));
-    if (vendor != 0x17aa || product != 0xd1ce)
+    if (!is_dice(service))
         return 0;
 
     int64_t usb = number_property(service, CFSTR(kUSBStandardVersion));
@@ -101,7 +106,7 @@ static int append_device(PyObject *devices, io_service_t service) {
     PyObject *configs = configurations(service);
     if (!configs)
         return -1;
-    PyObject *row = Py_BuildValue("(iiiiiiN)", (int)vendor, (int)product, (int)usb,
+    PyObject *row = Py_BuildValue("(iiiiiiN)", 0x17aa, 0xd1ce, (int)usb,
                                   (int)release, bus, address >= 0 && address <= 127 ? (int)address : -1,
                                   configs);
     if (!row)
@@ -111,14 +116,25 @@ static int append_device(PyObject *devices, io_service_t service) {
     return status;
 }
 
-static PyObject *devices(PyObject *self, PyObject *args) {
+static io_iterator_t device_iterator(void) {
     CFMutableDictionaryRef match = IOServiceMatching(kIOUSBHostDeviceClassName);
-    if (!match)
-        return PyErr_NoMemory();
+    if (!match) {
+        PyErr_NoMemory();
+        return IO_OBJECT_NULL;
+    }
     io_iterator_t iter = IO_OBJECT_NULL;
     IOReturn status = IOServiceGetMatchingServices(kIOMainPortDefault, match, &iter);
-    if (status != kIOReturnSuccess)
-        return io_error("Matching USB devices", status);
+    if (status != kIOReturnSuccess) {
+        io_error("Matching USB devices", status);
+        return IO_OBJECT_NULL;
+    }
+    return iter;
+}
+
+static PyObject *devices(PyObject *self, PyObject *args) {
+    io_iterator_t iter = device_iterator();
+    if (!iter)
+        return NULL;
 
     PyObject *result = PyList_New(0);
     if (result) {
@@ -140,8 +156,181 @@ static PyObject *devices(PyObject *self, PyObject *args) {
     return result;
 }
 
+static io_service_t unique_match(io_iterator_t iter, bool (*match)(io_service_t), const char *name) {
+    io_service_t selected = IO_OBJECT_NULL;
+    io_service_t service;
+    while ((service = IOIteratorNext(iter)) != IO_OBJECT_NULL) {
+        if (!match(service)) {
+            IOObjectRelease(service);
+            continue;
+        }
+        if (selected) {
+            IOObjectRelease(service);
+            IOObjectRelease(selected);
+            selected = IO_OBJECT_NULL;
+            PyErr_Format(PyExc_OSError, "Multiple matching %s", name);
+            break;
+        }
+        selected = service;
+    }
+    if (!IOIteratorIsValid(iter)) {
+        if (selected)
+            IOObjectRelease(selected);
+        selected = IO_OBJECT_NULL;
+        PyErr_Format(PyExc_OSError, "%s list changed during discovery", name);
+    } else if (!selected && !PyErr_Occurred()) {
+        PyErr_Format(PyExc_OSError, "No matching %s", name);
+    }
+    IOObjectRelease(iter);
+    return selected;
+}
+
+static bool is_interface_zero(io_service_t service) {
+    return IOObjectConformsTo(service, kIOUSBHostInterfaceClassName) &&
+           number_property(service, CFSTR(kUSBInterfaceNumber)) == 0;
+}
+
+static io_service_t rfc_interface(void) {
+    io_iterator_t devices = device_iterator();
+    if (!devices)
+        return IO_OBJECT_NULL;
+    io_service_t device = unique_match(devices, is_dice, "DiCE USB device (17aa:d1ce)");
+    if (!device)
+        return IO_OBJECT_NULL;
+    io_iterator_t children = IO_OBJECT_NULL;
+    IOReturn status = IORegistryEntryGetChildIterator(device, kIOServicePlane, &children);
+    IOObjectRelease(device);
+    if (status != kIOReturnSuccess) {
+        io_error("Enumerating active USB interfaces", status);
+        return IO_OBJECT_NULL;
+    }
+    return unique_match(children, is_interface_zero, "active DiCE interface 0");
+}
+
+typedef IOUSBInterfaceInterface182 **USBInterface;
+
+static bool check_interface(USBInterface usb) {
+    UInt8 config, number, alternate, endpoints;
+    IOReturn status = (*usb)->GetConfigurationValue(usb, &config);
+    if (status == kIOReturnSuccess)
+        status = (*usb)->GetInterfaceNumber(usb, &number);
+    if (status == kIOReturnSuccess)
+        status = (*usb)->GetAlternateSetting(usb, &alternate);
+    if (status == kIOReturnSuccess)
+        status = (*usb)->GetNumEndpoints(usb, &endpoints);
+    if (status != kIOReturnSuccess) {
+        io_error("Inspecting active interface", status);
+        return false;
+    }
+    if (config != 1 || number != 0 || alternate != 0 || endpoints != 2) {
+        PyErr_SetString(PyExc_OSError, "Expected configuration 1, interface 0, alternate 0, two pipes");
+        return false;
+    }
+    return true;
+}
+
+static bool find_rfc_pipes(USBInterface usb, UInt8 *input, UInt8 *output) {
+    for (UInt8 pipe = 1; pipe <= 2; pipe++) {
+        UInt8 direction, number, type, interval;
+        UInt16 packet;
+        IOReturn status = (*usb)->GetPipeProperties(
+            usb, pipe, &direction, &number, &type, &packet, &interval);
+        if (status != kIOReturnSuccess) {
+            io_error("Inspecting active pipe", status);
+            return false;
+        }
+        if (number == 1 && type == kUSBBulk && packet == 512) {
+            if (direction == kUSBIn)
+                *input = pipe;
+            if (direction == kUSBOut)
+                *output = pipe;
+        }
+    }
+    if (!*input || !*output) {
+        PyErr_SetString(PyExc_OSError, "Expected bulk IN 0x81 and OUT 0x01 with 512-byte packets");
+        return false;
+    }
+    return true;
+}
+
+static PyObject *exchange_rfc_version(USBInterface usb, UInt8 input, UInt8 output) {
+    UInt8 request[] = {0xb5, 0x02, 0x00, 0x20, 0x00, 0x69};
+    IOReturn status = (*usb)->WritePipeTO(usb, output, request, sizeof(request), 1000, 1000);
+    if (status != kIOReturnSuccess)
+        return io_error("RFC version OUT transfer", status);
+
+    const uint64_t ms = 1000000;
+    uint64_t deadline = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) + 2000 * ms;
+    UInt8 reply[10];
+    size_t used = 0;
+    for (int reads = 0; reads < 16 && used < sizeof(reply); reads++) {
+        uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
+        if (now >= deadline)
+            return PyErr_Format(PyExc_TimeoutError, "RFC version IN deadline after %zu bytes", used);
+        UInt32 timeout = (UInt32)((deadline - now + ms - 1) / ms);
+        UInt8 packet[512];
+        UInt32 size = sizeof(packet);
+        status = (*usb)->ReadPipeTO(usb, input, packet, &size, timeout, timeout);
+        if (status != kIOReturnSuccess)
+            return io_error("RFC version IN transfer", status);
+        if (clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) > deadline)
+            return PyErr_Format(PyExc_TimeoutError, "RFC version IN exceeded its deadline");
+        if (size > sizeof(reply) - used)
+            return PyErr_Format(PyExc_ValueError, "unexpected trailing bytes in RFC version reply");
+        memcpy(reply + used, packet, size);
+        used += size;
+    }
+    return PyBytes_FromStringAndSize((const char *)reply, (Py_ssize_t)used);
+}
+
+static PyObject *read_from_interface(USBInterface usb) {
+    if (!check_interface(usb))
+        return NULL;
+    IOReturn status = (*usb)->USBInterfaceOpen(usb);
+    if (status != kIOReturnSuccess)
+        return io_error("Opening DiCE interface without seizing it", status);
+    UInt8 input = 0, output = 0;
+    PyObject *reply = NULL;
+    if (check_interface(usb) && find_rfc_pipes(usb, &input, &output))
+        reply = exchange_rfc_version(usb, input, output);
+    status = (*usb)->USBInterfaceClose(usb);
+    if (status != kIOReturnSuccess && reply) {
+        Py_DECREF(reply);
+        return io_error("Closing DiCE interface", status);
+    }
+    return reply;
+}
+
+static PyObject *rfc_version_reply(PyObject *self, PyObject *args) {
+    io_service_t service = rfc_interface();
+    if (!service)
+        return NULL;
+    IOCFPlugInInterface **plugin = NULL;
+    SInt32 score;
+    IOReturn status = IOCreatePlugInInterfaceForService(
+        service, kIOUSBInterfaceUserClientTypeID, kIOCFPlugInInterfaceID, &plugin, &score);
+    if (status != kIOReturnSuccess) {
+        IOObjectRelease(service);
+        return io_error("Creating USB interface plug-in", status);
+    }
+    USBInterface usb = NULL;
+    HRESULT query = (*plugin)->QueryInterface(
+        plugin, CFUUIDGetUUIDBytes(kIOUSBInterfaceInterfaceID182), (LPVOID *)&usb);
+    PyObject *result = NULL;
+    if (query == S_OK && usb) {
+        result = read_from_interface(usb);
+        (*usb)->Release(usb);
+    } else {
+        io_error("Querying USB interface", query);
+    }
+    IODestroyPlugInInterface(plugin);
+    IOObjectRelease(service);
+    return result;
+}
+
 static PyMethodDef methods[] = {
     {"devices", devices, METH_NOARGS, "Read cached descriptors for matching DiCE adapters."},
+    {"rfc_version_reply", rfc_version_reply, METH_NOARGS, "Read exactly one DiCE RFC version reply."},
     {NULL, NULL, 0, NULL}
 };
 

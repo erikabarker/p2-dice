@@ -1,12 +1,12 @@
+import sys
+from types import SimpleNamespace
+
 import pytest
 
-from p2_dice.rfc import RFC_VERSION_REQUEST, RfcVersionReply
+from p2_dice.cli import main
+from p2_dice.rfc import RfcVersionReply
 
 REPLY = bytes.fromhex("b5 06 00 24 00 00 02 03 04 72")
-
-
-def test_request_is_the_fixed_no_argument_getter() -> None:
-    assert RFC_VERSION_REQUEST == b"\xb5\x02\x00\x20\x00\x69"
 
 
 @pytest.mark.parametrize("split", range(1, len(REPLY)))
@@ -67,3 +67,46 @@ def test_extra_data_invalidates_an_otherwise_complete_reply() -> None:
         reply.feed(b"\xb5")
     with pytest.raises(ValueError, match="already rejected"):
         reply.finish()
+
+
+def test_cli_reads_one_reply(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = []
+
+    def read() -> bytes:
+        calls.append(1)
+        return REPLY
+
+    monkeypatch.setitem(sys.modules, "p2_dice._iokit", SimpleNamespace(rfc_version_reply=read))
+    assert main(["rfc-version"]) == 0
+    assert calls == [1]
+    assert capsys.readouterr().out == "RFC version 2.3.4\n"
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "message"),
+    [
+        (OSError("interface busy"), 2, "USB transfer failed"),
+        (ValueError("trailing bytes"), 3, "Invalid RFC version reply"),
+        (REPLY[:-1], 3, "truncated"),
+        (bytes.fromhex("b5 06 00 24 00 03 02 03 04 75"), 3, "status 0x03"),
+    ],
+)
+def test_cli_distinguishes_transfer_and_protocol_failures(
+    failure: Exception | bytes,
+    status: int,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def read() -> bytes:
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    monkeypatch.setitem(sys.modules, "p2_dice._iokit", SimpleNamespace(rfc_version_reply=read))
+    assert main(["rfc-version"]) == status
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert message in captured.err
