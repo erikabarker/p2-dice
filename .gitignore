@@ -23,6 +23,7 @@ results/
 *.pcapng
 *.bin
 *.dylib
+*.so
 *.dll
 *.exe
 *.fw
