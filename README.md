@@ -23,7 +23,7 @@ Run the last two commands from this checkout. The inventory looks for USB vendor
 | Read adapter firmware version | Unverified. |
 | Read a vehicle ECU on the 2004 XC70 | Unverified. |
 
-The USB device release field (`bcdDevice`) is vendor-defined. Reporting that field does not establish the installed DiCE firmware version. The inventory reads USB descriptors and leaves the vehicle network idle.
+The USB device release field (`bcdDevice`) is vendor-defined. Reporting that field does not establish the installed DiCE firmware version. The inventory reads USB descriptors without opening a vehicle-network channel.
 
 ## Contributing
 
