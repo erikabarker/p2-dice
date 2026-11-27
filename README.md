@@ -16,12 +16,19 @@ Run the last two commands from this checkout. The inventory looks for USB vendor
 
 The command exits with status 0 on success, 1 when no matching adapter is present, or 2 on an inventory error. A failed read prints its diagnostic to standard error.
 
+## Read the RFC interface version
+
+`uv run --locked p2-dice rfc-version` queries the adapter's RFC protocol version. This operation is experimental. The request and reply format were checked against the host driver, and the transport has been tested offline. A physical adapter has yet to return a verified reply to this command.
+
+The command selects a single matching adapter, temporarily opens its USB interface and sends the fixed version request once. It reports a version only after the command identifier, status, length and checksums validate. The RFC version identifies the protocol spoken by the adapter. The separate firmware-version query remains unverified.
+
 ## Support
 
 | Operation | Evidence |
 | --- | --- |
 | Identify a USB device advertising `17aa:d1ce` | Observed by macOS on one adapter. These IDs alone cannot establish authenticity. |
 | Inventory configurations, interfaces and endpoints | The packaged CLI on Apple silicon read configuration 1, interface 0, alternate setting 0 on one adapter. Bulk endpoints were IN `0x81` and OUT `0x01`, both with a 512-byte maximum packet. |
+| Read adapter RFC protocol version | Fixed getter implemented and tested offline. Hardware reply pending. |
 | Read adapter firmware version | Unverified. |
 | Read a vehicle ECU on the 2004 XC70 | Unverified. |
 
