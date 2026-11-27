@@ -14,12 +14,14 @@ uv run --locked p2-dice inventory
 
 Run the last two commands from this checkout. The inventory looks for USB vendor ID `17aa` and product ID `d1ce` and lists each matching device's configurations, interfaces, alternate settings and endpoints. Endpoint direction is relative to the host. An IN endpoint carries data from the adapter to the Mac. The command reads the configuration descriptors macOS cached during USB enumeration. See [Apple’s USB device interface reference](https://developer.apple.com/documentation/iokit/iousbdeviceinterface942/2977148-getconfigurationdescriptorptr).
 
+The command exits with status 0 on success, 1 when no matching adapter is present, or 2 on an inventory error. A failed read prints its diagnostic to standard error.
+
 ## Support
 
 | Operation | Evidence |
 | --- | --- |
 | Identify a USB device advertising `17aa:d1ce` | Observed by macOS on one adapter. These IDs alone cannot establish authenticity. |
-| Inventory configurations, interfaces and endpoints | On one adapter, a native IOKit probe read configuration 1, interface 0, alternate setting 0. Bulk endpoints were IN `0x81` and OUT `0x01`, both with a 512-byte maximum packet. |
+| Inventory configurations, interfaces and endpoints | The packaged CLI on Apple silicon read configuration 1, interface 0, alternate setting 0 on one adapter. Bulk endpoints were IN `0x81` and OUT `0x01`, both with a 512-byte maximum packet. |
 | Read adapter firmware version | Unverified. |
 | Read a vehicle ECU on the 2004 XC70 | Unverified. |
 
