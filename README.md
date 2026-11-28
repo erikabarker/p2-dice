@@ -29,10 +29,15 @@ The command selects a single matching adapter and checks its active USB configur
 | Identify a USB device advertising `17aa:d1ce` | Observed by macOS on one adapter. These IDs alone cannot establish authenticity. |
 | Inventory configurations, interfaces and endpoints | The packaged CLI on Apple silicon read configuration 1, interface 0, alternate setting 0 on one adapter. Bulk endpoints were IN `0x81` and OUT `0x01`, both with a 512-byte maximum packet. |
 | Read adapter RFC protocol version | On Apple silicon, the packaged CLI received a valid `1.1.24` reply from one adapter. |
+| Decode a saved adapter firmware-version reply | Offline parser tested with synthetic command `0x04` frames. No native firmware reply captured. |
 | Read adapter firmware version | The native macOS command is unimplemented. |
 | Read a vehicle ECU on the 2004 XC70 | Unverified. |
 
 The USB device release field (`bcdDevice`) is vendor-defined. Reporting that field does not establish the installed DiCE firmware version. The inventory reads USB descriptors without opening a vehicle-network channel.
+
+## Development direction
+
+The target is independent module diagnostics and customization: a complete controller and sensor/output map, live readings, fault clearing, learned adaptations, configuration, service routines, firmware reading/programming and custom calibration or code. These are development targets; implemented and observed support is listed above. Each module and software version needs its own verified operation. Factory software packages and update availability are separate from diagnostic protocol access.
 
 ## Contributing
 
