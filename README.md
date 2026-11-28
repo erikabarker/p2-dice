@@ -20,7 +20,7 @@ The command exits with status 0 on success, 1 when no matching adapter is presen
 
 `uv run --locked p2-dice rfc-version` queries the adapter's RFC protocol version. This operation is experimental. The request and reply format were checked against the host driver, and the transport has been tested offline. A physical adapter has yet to return a verified reply to this command.
 
-The command selects a single matching adapter, temporarily opens its USB interface and sends the fixed version request once. It reports a version only after the command identifier, status, length and checksums validate. The RFC version identifies the protocol spoken by the adapter. The separate firmware-version query remains unverified.
+The command selects a single matching adapter and checks its active USB configuration. If the adapter is unconfigured, it opens the device without seizing it, verifies that it advertises configuration 1, selects that configuration once and releases the device. It then opens interface 0 and sends the fixed version request once. It reports a version only after the command identifier, status, length and checksums validate. The RFC version identifies the protocol spoken by the adapter. The separate firmware-version query remains unverified.
 
 ## Support
 

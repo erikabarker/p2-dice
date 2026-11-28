@@ -25,25 +25,50 @@ static PyObject *io_error(const char *operation, int32_t status) {
     return PyErr_Format(PyExc_OSError, "%s failed (0x%08x)", operation, (unsigned int)status);
 }
 
-static PyObject *configurations(io_service_t service) {
-    IOCFPlugInInterface **plugin = NULL;
+typedef IOUSBDeviceInterface **USBDevice;
+
+static USBDevice device_interface(io_service_t service, IOCFPlugInInterface ***plugin) {
     SInt32 score;
     IOReturn status = IOCreatePlugInInterfaceForService(
-        service, kIOUSBDeviceUserClientTypeID, kIOCFPlugInInterfaceID, &plugin, &score);
-    if (status != kIOReturnSuccess)
-        return io_error("Creating USB descriptor plug-in", status);
-
-    IOUSBDeviceInterface **device = NULL;
-    HRESULT query = (*plugin)->QueryInterface(
-        plugin, CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID100), (LPVOID *)&device);
-    if (query != S_OK || !device) {
-        IODestroyPlugInInterface(plugin);
-        return io_error("Querying USB descriptor interface", query);
+        service, kIOUSBDeviceUserClientTypeID, kIOCFPlugInInterfaceID, plugin, &score);
+    if (status != kIOReturnSuccess) {
+        io_error("Creating USB device plug-in", status);
+        return NULL;
     }
+    USBDevice device = NULL;
+    HRESULT query = (**plugin)->QueryInterface(
+        *plugin, CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID100), (LPVOID *)&device);
+    if (query != S_OK || !device) {
+        IODestroyPlugInInterface(*plugin);
+        io_error("Querying USB device interface", query);
+        return NULL;
+    }
+    return device;
+}
 
+static IOUSBConfigurationDescriptorPtr configuration_at(USBDevice device, UInt8 index) {
+    IOUSBConfigurationDescriptorPtr descriptor = NULL;
+    IOReturn status = (*device)->GetConfigurationDescriptorPtr(device, index, &descriptor);
+    if (status != kIOReturnSuccess) {
+        io_error("Getting configuration descriptor", status);
+        return NULL;
+    }
+    if (!descriptor || descriptor->bLength < 9 || descriptor->bDescriptorType != 2 ||
+        OSSwapLittleToHostInt16(descriptor->wTotalLength) < descriptor->bLength) {
+        PyErr_SetString(PyExc_ValueError, "invalid configuration descriptor header");
+        return NULL;
+    }
+    return descriptor;
+}
+
+static PyObject *configurations(io_service_t service) {
+    IOCFPlugInInterface **plugin = NULL;
+    USBDevice device = device_interface(service, &plugin);
+    if (!device)
+        return NULL;
     UInt8 count = 0;
     PyObject *result = NULL;
-    status = (*device)->GetNumberOfConfigurations(device, &count);
+    IOReturn status = (*device)->GetNumberOfConfigurations(device, &count);
     if (status != kIOReturnSuccess) {
         io_error("Getting configuration count", status);
         goto done;
@@ -56,16 +81,8 @@ static PyObject *configurations(io_service_t service) {
     if (!result)
         goto done;
     for (int index = 0; index < count; index++) {
-        IOUSBConfigurationDescriptorPtr descriptor = NULL;
-        status = (*device)->GetConfigurationDescriptorPtr(device, index, &descriptor);
-        if (status != kIOReturnSuccess) {
-            io_error("Getting configuration descriptor", status);
-            Py_CLEAR(result);
-            break;
-        }
-        if (!descriptor || descriptor->bLength < 9 || descriptor->bDescriptorType != 2 ||
-            OSSwapLittleToHostInt16(descriptor->wTotalLength) < descriptor->bLength) {
-            PyErr_SetString(PyExc_ValueError, "invalid configuration descriptor header");
+        IOUSBConfigurationDescriptorPtr descriptor = configuration_at(device, index);
+        if (!descriptor) {
             Py_CLEAR(result);
             break;
         }
@@ -191,6 +208,78 @@ static bool is_interface_zero(io_service_t service) {
            number_property(service, CFSTR(kUSBInterfaceNumber)) == 0;
 }
 
+static bool select_rfc_configuration(USBDevice device) {
+    UInt8 count;
+    IOReturn status = (*device)->GetNumberOfConfigurations(device, &count);
+    if (status != kIOReturnSuccess) {
+        io_error("Getting configuration count", status);
+        return false;
+    }
+    for (int index = 0; index < count; index++) {
+        IOUSBConfigurationDescriptorPtr descriptor = configuration_at(device, index);
+        if (!descriptor)
+            return false;
+        if (descriptor->bConfigurationValue == 1) {
+            status = (*device)->SetConfiguration(device, 1);
+            if (status == kIOReturnSuccess)
+                return true;
+            io_error("Selecting DiCE configuration 1", status);
+            return false;
+        }
+    }
+    PyErr_SetString(PyExc_OSError, "DiCE does not advertise USB configuration 1");
+    return false;
+}
+
+static bool ensure_rfc_configuration(USBDevice device) {
+    UInt8 active;
+    IOReturn status = (*device)->GetConfiguration(device, &active);
+    if (status != kIOReturnSuccess) {
+        io_error("Reading active USB configuration", status);
+        return false;
+    }
+    if (active == 0) {
+        status = (*device)->USBDeviceOpen(device);
+        if (status != kIOReturnSuccess) {
+            io_error("Opening DiCE USB device without seizing it", status);
+            return false;
+        }
+        // Another owner may have configured the adapter between the read and the open.
+        status = (*device)->GetConfiguration(device, &active);
+        if (status != kIOReturnSuccess)
+            io_error("Rechecking active USB configuration", status);
+        else if (active == 0 && select_rfc_configuration(device))
+            active = 1;
+        status = (*device)->USBDeviceClose(device);
+        if (status != kIOReturnSuccess && !PyErr_Occurred())
+            io_error("Closing DiCE USB device", status);
+        if (PyErr_Occurred())
+            return false;
+    }
+    if (active != 1) {
+        PyErr_Format(PyExc_OSError, "Unexpected active DiCE configuration %u", (unsigned)active);
+        return false;
+    }
+    return true;
+}
+
+static io_iterator_t active_interfaces(USBDevice device) {
+    if (!ensure_rfc_configuration(device))
+        return IO_OBJECT_NULL;
+    IOUSBFindInterfaceRequest request = {
+        kIOUSBFindInterfaceDontCare, kIOUSBFindInterfaceDontCare, kIOUSBFindInterfaceDontCare, 0
+    };
+    io_iterator_t iter = IO_OBJECT_NULL;
+    IOReturn status = (*device)->CreateInterfaceIterator(device, &request, &iter);
+    if (status != kIOReturnSuccess) {
+        io_error("Enumerating active USB interfaces", status);
+        return IO_OBJECT_NULL;
+    }
+    if (!iter)
+        PyErr_SetString(PyExc_OSError, "No matching active DiCE interface 0");
+    return iter;
+}
+
 static io_service_t rfc_interface(void) {
     io_iterator_t devices = device_iterator();
     if (!devices) {
@@ -201,14 +290,15 @@ static io_service_t rfc_interface(void) {
     io_service_t device = unique_match(devices, is_dice, "DiCE USB device (17aa:d1ce)");
     if (!device)
         return IO_OBJECT_NULL;
-    io_iterator_t children = IO_OBJECT_NULL;
-    IOReturn status = IORegistryEntryGetChildIterator(device, kIOServicePlane, &children);
+    IOCFPlugInInterface **plugin = NULL;
+    USBDevice usb = device_interface(device, &plugin);
     IOObjectRelease(device);
-    if (status != kIOReturnSuccess) {
-        io_error("Enumerating active USB interfaces", status);
+    if (!usb)
         return IO_OBJECT_NULL;
-    }
-    return unique_match(children, is_interface_zero, "active DiCE interface 0");
+    io_iterator_t interfaces = active_interfaces(usb);
+    (*usb)->Release(usb);
+    IODestroyPlugInInterface(plugin);
+    return interfaces ? unique_match(interfaces, is_interface_zero, "active DiCE interface 0") : IO_OBJECT_NULL;
 }
 
 typedef IOUSBInterfaceInterface182 **USBInterface;

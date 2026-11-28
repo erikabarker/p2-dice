@@ -116,3 +116,47 @@ def test_successful_iokit_lookup_without_an_iterator(
     output = capsys.readouterr()
     assert output.out == ""
     assert message in output.err
+
+
+_SELECTION = "get open get count descriptor descriptor set close"
+
+
+@pytest.mark.parametrize(
+    ("scenario", "calls"),
+    [
+        ("unconfigured", f"{_SELECTION} iterator"),
+        ("already", "get iterator"),
+        ("became-active", "get open get close iterator"),
+    ],
+)
+def test_active_interface_is_discovered_before_one_rfc_request(
+    native: ModuleType, scenario: str, calls: str
+) -> None:
+    assert native.activate_and_exchange(scenario) == bytes.fromhex("b5 06 00 24 00 00 02 03 04 72")
+    assert native.device_calls() == calls.split()
+    assert native.counts() == (1, 1, 2, 1)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "error", "calls"),
+    [
+        ("get-error", OSError, "get"),
+        ("other", OSError, "get"),
+        ("device-busy", OSError, "get open"),
+        ("recheck-error", OSError, "get open get close"),
+        ("became-other", OSError, "get open get close"),
+        ("missing", OSError, "get open get count descriptor descriptor close"),
+        ("bad-descriptor", ValueError, "get open get count descriptor close"),
+        ("selection-error", OSError, _SELECTION),
+        ("close-error", OSError, _SELECTION),
+        ("iterator-error", OSError, f"{_SELECTION} iterator"),
+        ("no-iterator", OSError, f"{_SELECTION} iterator"),
+    ],
+)
+def test_configuration_failure_releases_device_and_stops_before_any_interface_transfer(
+    native: ModuleType, scenario: str, error: type[Exception], calls: str
+) -> None:
+    with pytest.raises(error):
+        native.activate_and_exchange(scenario)
+    assert native.device_calls() == calls.split()
+    assert native.counts() == (0, 0, 0, 0)

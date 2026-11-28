@@ -107,12 +107,7 @@ static IOReturn read_pipe(void *self, UInt8 pipe, void *buffer, UInt32 *size,
     return kIOReturnSuccess;
 }
 
-static PyObject *simulate(PyObject *self, PyObject *name) {
-    scenario = PyUnicode_AsUTF8(name);
-    if (!scenario)
-        return NULL;
-    reads = writes = opens = closes = 0;
-    now = 1000000000;
+static PyObject *exchange(void) {
     IOUSBInterfaceInterface182 table = {
         .GetConfigurationValue = config, .GetInterfaceNumber = number,
         .GetAlternateSetting = alternate, .GetNumEndpoints = endpoints,
@@ -121,6 +116,101 @@ static PyObject *simulate(PyObject *self, PyObject *name) {
     };
     IOUSBInterfaceInterface182 *interface = &table;
     return read_from_interface(&interface);
+}
+
+static PyObject *simulate(PyObject *self, PyObject *name) {
+    scenario = PyUnicode_AsUTF8(name);
+    if (!scenario)
+        return NULL;
+    reads = writes = opens = closes = 0;
+    now = 1000000000;
+    return exchange();
+}
+
+static PyObject *calls;
+static void record(const char *name) {
+    PyObject *entry = PyUnicode_FromString(name);
+    if (entry) {
+        PyList_Append(calls, entry);
+        Py_DECREF(entry);
+    }
+}
+
+static IOReturn device_config(void *self, UInt8 *value) {
+    bool owned = PyList_Size(calls) > 0;
+    record("get");
+    if (scenario_is("get-error") || (owned && scenario_is("recheck-error")))
+        return kIOReturnNoDevice;
+    *value = scenario_is("already") || (owned && scenario_is("became-active")) ? 1 :
+        scenario_is("other") || (owned && scenario_is("became-other")) ? 2 : 0;
+    return kIOReturnSuccess;
+}
+
+static IOReturn device_open(void *self) {
+    record("open");
+    return scenario_is("device-busy") ? kIOReturnExclusiveAccess : kIOReturnSuccess;
+}
+
+static IOReturn device_close(void *self) {
+    record("close");
+    return scenario_is("close-error") ? kIOReturnError : kIOReturnSuccess;
+}
+
+static IOReturn config_count(void *self, UInt8 *value) {
+    record("count");
+    *value = 2;
+    return kIOReturnSuccess;
+}
+
+static IOReturn config_descriptor(void *self, UInt8 index, IOUSBConfigurationDescriptorPtr *result) {
+    static IOUSBConfigurationDescriptor descriptor;
+    record("descriptor");
+    if (index >= 2)
+        return kIOReturnBadArgument;
+    descriptor = (IOUSBConfigurationDescriptor) {
+        .bLength = 9, .bDescriptorType = 2,
+        .wTotalLength = OSSwapHostToLittleInt16(scenario_is("bad-descriptor") ? 1 : 9),
+        .bConfigurationValue = index == 0 || scenario_is("missing") ? 3 : 1
+    };
+    *result = &descriptor;
+    return kIOReturnSuccess;
+}
+
+static IOReturn set_config(void *self, UInt8 value) {
+    record("set");
+    return value != 1 || scenario_is("selection-error") ? kIOReturnBadArgument : kIOReturnSuccess;
+}
+
+static IOReturn interface_iterator(void *self, IOUSBFindInterfaceRequest *req, io_iterator_t *iter) {
+    record("iterator");
+    if (req->bAlternateSetting != 0 || scenario_is("iterator-error"))
+        return kIOReturnBadArgument;
+    *iter = scenario_is("no-iterator") ? IO_OBJECT_NULL : 4;
+    return kIOReturnSuccess;
+}
+
+static PyObject *activate_and_exchange(PyObject *self, PyObject *name) {
+    scenario = PyUnicode_AsUTF8(name);
+    if (!scenario)
+        return NULL;
+    Py_XSETREF(calls, PyList_New(0));
+    if (!calls)
+        return NULL;
+    reads = writes = opens = closes = 0;
+    now = 1000000000;
+    IOUSBDeviceInterface table = {
+        .GetConfiguration = device_config, .USBDeviceOpen = device_open, .USBDeviceClose = device_close,
+        .GetNumberOfConfigurations = config_count, .GetConfigurationDescriptorPtr = config_descriptor,
+        .SetConfiguration = set_config, .CreateInterfaceIterator = interface_iterator,
+    };
+    IOUSBDeviceInterface *device = &table;
+    if (!active_interfaces(&device))
+        return NULL;
+    return exchange();
+}
+
+static PyObject *device_calls(PyObject *self, PyObject *args) {
+    return Py_NewRef(calls);
 }
 
 static PyObject *counts(PyObject *self, PyObject *args) {
@@ -170,6 +260,8 @@ static PyMethodDef fake_methods[] = {
     {"devices", devices, METH_NOARGS, NULL},
     {"rfc_version_reply", rfc_version_reply, METH_NOARGS, NULL},
     {"select_service", select_service, METH_O, NULL}, {"release_counts", release_counts, METH_NOARGS, NULL},
+    {"activate_and_exchange", activate_and_exchange, METH_O, NULL},
+    {"device_calls", device_calls, METH_NOARGS, NULL},
     {"simulate", simulate, METH_O, NULL}, {"counts", counts, METH_NOARGS, NULL}, {NULL}
 };
 static struct PyModuleDef fake_module = {
