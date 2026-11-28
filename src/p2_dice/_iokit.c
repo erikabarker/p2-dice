@@ -133,8 +133,9 @@ static io_iterator_t device_iterator(void) {
 
 static PyObject *devices(PyObject *self, PyObject *args) {
     io_iterator_t iter = device_iterator();
+    // IOKit can report a successful empty match with a null iterator.
     if (!iter)
-        return NULL;
+        return PyErr_Occurred() ? NULL : PyList_New(0);
 
     PyObject *result = PyList_New(0);
     if (result) {
@@ -192,8 +193,11 @@ static bool is_interface_zero(io_service_t service) {
 
 static io_service_t rfc_interface(void) {
     io_iterator_t devices = device_iterator();
-    if (!devices)
+    if (!devices) {
+        if (!PyErr_Occurred())
+            PyErr_SetString(PyExc_OSError, "No matching DiCE USB device (17aa:d1ce)");
         return IO_OBJECT_NULL;
+    }
     io_service_t device = unique_match(devices, is_dice, "DiCE USB device (17aa:d1ce)");
     if (!device)
         return IO_OBJECT_NULL;

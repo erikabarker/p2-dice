@@ -2,6 +2,13 @@
 #include <time.h>
 #include <IOKit/IOKitLib.h>
 
+static kern_return_t no_services(mach_port_t port, CFDictionaryRef match, io_iterator_t *iter) {
+    CFRelease(match);
+    *iter = IO_OBJECT_NULL;
+    return kIOReturnSuccess;
+}
+
+#define IOServiceGetMatchingServices no_services
 static uint64_t simulated_time(clockid_t clock);
 static io_object_t next_service(io_iterator_t iter);
 static boolean_t valid_iterator(io_iterator_t iter);
@@ -160,6 +167,8 @@ static PyObject *release_counts(PyObject *self, PyObject *args) {
 }
 
 static PyMethodDef fake_methods[] = {
+    {"devices", devices, METH_NOARGS, NULL},
+    {"rfc_version_reply", rfc_version_reply, METH_NOARGS, NULL},
     {"select_service", select_service, METH_O, NULL}, {"release_counts", release_counts, METH_NOARGS, NULL},
     {"simulate", simulate, METH_O, NULL}, {"counts", counts, METH_NOARGS, NULL}, {NULL}
 };

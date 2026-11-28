@@ -7,6 +7,8 @@ from types import ModuleType
 
 import pytest
 
+from p2_dice.cli import main
+
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="uses the macOS IOKit SDK")
 
 
@@ -92,3 +94,25 @@ def test_matching_rejects_ambiguous_or_missing_devices_and_releases_references(
     with pytest.raises(OSError, match=message):
         native.select_service(scenario)
     assert native.release_counts() == released
+
+
+@pytest.mark.parametrize(
+    ("command", "exit_code", "message"),
+    [
+        ("inventory", 1, "No DiCE USB device found (17aa:d1ce)"),
+        ("rfc-version", 2, "No matching DiCE USB device (17aa:d1ce)"),
+    ],
+)
+def test_successful_iokit_lookup_without_an_iterator(
+    native: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    exit_code: int,
+    message: str,
+) -> None:
+    monkeypatch.setitem(sys.modules, "p2_dice._iokit", native)
+    assert main([command]) == exit_code
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert message in output.err
