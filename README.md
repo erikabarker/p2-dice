@@ -18,9 +18,9 @@ The command exits with status 0 on success, 1 when no matching adapter is presen
 
 ## Read the RFC interface version
 
-`uv run --locked p2-dice rfc-version` queries the adapter's RFC protocol version. This operation is experimental. The request and reply format were checked against the host driver, and the transport has been tested offline. A physical adapter has yet to return a verified reply to this command.
+`uv run --locked p2-dice rfc-version` queries the adapter's RFC protocol version. This operation is experimental. On one powered DiCE adapter, the native macOS command returned RFC version `1.1.24` with the engine and ignition off.
 
-The command selects a single matching adapter and checks its active USB configuration. If the adapter is unconfigured, it opens the device without seizing it, verifies that it advertises configuration 1, selects that configuration once and releases the device. It then opens interface 0 and sends the fixed version request once. It reports a version only after the command identifier, status, length and checksums validate. The RFC version identifies the protocol spoken by the adapter. The separate firmware-version query remains unverified.
+The command selects a single matching adapter and checks its active USB configuration. If the adapter is unconfigured, it opens the device without seizing it, verifies that it advertises configuration 1, selects that configuration once and releases the device. It then opens interface 0 and sends the fixed version request once. It reports a version only after the command identifier, status, length and checksums validate. The RFC version identifies the protocol spoken by the adapter. The native CLI does not yet implement the separate firmware-version query.
 
 ## Support
 
@@ -28,8 +28,8 @@ The command selects a single matching adapter and checks its active USB configur
 | --- | --- |
 | Identify a USB device advertising `17aa:d1ce` | Observed by macOS on one adapter. These IDs alone cannot establish authenticity. |
 | Inventory configurations, interfaces and endpoints | The packaged CLI on Apple silicon read configuration 1, interface 0, alternate setting 0 on one adapter. Bulk endpoints were IN `0x81` and OUT `0x01`, both with a 512-byte maximum packet. |
-| Read adapter RFC protocol version | Fixed getter implemented and tested offline. Hardware reply pending. |
-| Read adapter firmware version | Unverified. |
+| Read adapter RFC protocol version | On Apple silicon, the packaged CLI received a valid `1.1.24` reply from one adapter. |
+| Read adapter firmware version | The native macOS command is unimplemented. |
 | Read a vehicle ECU on the 2004 XC70 | Unverified. |
 
 The USB device release field (`bcdDevice`) is vendor-defined. Reporting that field does not establish the installed DiCE firmware version. The inventory reads USB descriptors without opening a vehicle-network channel.
