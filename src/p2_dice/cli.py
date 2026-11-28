@@ -1,9 +1,33 @@
 import argparse
+import hashlib
+import json
 import sys
 from collections.abc import Sequence
+from dataclasses import asdict
+from pathlib import Path
 
+from p2_dice.capture import decode_engine_capture
 from p2_dice.descriptors import configuration_lines
 from p2_dice.rfc import RfcVersionReply
+
+
+def import_engine_capture(path: Path) -> int:
+    try:
+        raw = path.read_bytes()
+        capture = decode_engine_capture(json.loads(raw))
+    except OSError as error:
+        print(f"Cannot read engine capture: {error}", file=sys.stderr)
+        return 2
+    except (ValueError, RecursionError) as error:
+        print(f"Invalid engine capture: {error}", file=sys.stderr)
+        return 3
+    result: dict[str, object] = {
+        "source_file": str(path),
+        "source_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    result |= asdict(capture)
+    print(json.dumps(result, indent=2))
+    return 0
 
 
 def rfc_version() -> int:
@@ -54,8 +78,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("inventory", help="list DiCE USB descriptors")
     commands.add_parser("rfc-version", help="read the adapter RFC version")
+    capture = commands.add_parser(
+        "import-engine-capture", help="decode DTCs from a saved Windows engine-reader log"
+    )
+    capture.add_argument("path", type=Path)
     args = parser.parse_args(argv)
 
+    if args.command == "import-engine-capture":
+        return import_engine_capture(args.path)
     try:
         return rfc_version() if args.command == "rfc-version" else inventory()
     except ImportError:
