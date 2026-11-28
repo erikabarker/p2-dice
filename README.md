@@ -22,6 +22,12 @@ The command exits with status 0 on success, 1 when no matching adapter is presen
 
 The command selects a single matching adapter and checks its active USB configuration. If the adapter is unconfigured, it opens the device without seizing it, verifies that it advertises configuration 1, selects that configuration once and releases the device. It then opens interface 0 and sends the fixed version request once. It reports a version only after the command identifier, status, length and checksums validate. The RFC version identifies the protocol spoken by the adapter. The native CLI does not yet implement the separate firmware-version query.
 
+## Import a saved engine capture
+
+`uv run --locked p2-dice import-engine-capture PATH` decodes the JSON log written by the separate Windows engine reader, which ran the official J2534 driver. It reads the file offline and opens no device. The command reports the generic stored (mode 03) and pending (mode 07) emission codes. Each reply keeps its source address, host time, adapter timestamp and raw frame. It validates every received frame's ISO 9141-2 header, length and checksum.
+
+Each mode has one status. `replied` with an empty `dtcs` list means the module confirmed no codes. `no_reply`, `write_failed` and `read_failed` mean the read did not establish a code list, and `not_requested` means the reader never sent that mode. A negative response counts as a read failure. Failures outside the code queries, such as a failed open, initialization or cleanup, appear in `session_errors`. The command exits with status 3 and prints no result on malformed or unsupported input. Keep real captures and their decoded output outside this repository.
+
 ## Support
 
 | Operation | Evidence |
@@ -31,7 +37,8 @@ The command selects a single matching adapter and checks its active USB configur
 | Read adapter RFC protocol version | On Apple silicon, the packaged CLI received a valid `1.1.24` reply from one adapter. |
 | Decode a saved adapter firmware-version reply | Offline parser tested with synthetic command `0x04` frames. No native firmware reply captured. |
 | Read adapter firmware version | The native macOS command is unimplemented. |
-| Read a vehicle ECU on the 2004 XC70 | Unverified. |
+| Decode a saved Windows ISO 9141-2 engine-code capture | One real capture decoded offline. Its result matched the separately saved baseline. |
+| Read a vehicle ECU natively from macOS | Unverified. |
 
 The USB device release field (`bcdDevice`) is vendor-defined. Reporting that field does not establish the installed DiCE firmware version. The inventory reads USB descriptors without opening a vehicle-network channel.
 
